@@ -2,6 +2,3 @@
 /sum
 /fib
 *.o
-
-# Binary Bomb answers must be submitted privately.
-/BOMB_REPORT.md
