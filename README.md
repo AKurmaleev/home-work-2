@@ -88,3 +88,74 @@ clang -no-pie fib.s -o fib
 - `readelf -lW` показывает `GNU_STACK` без права исполнения и наличие `GNU_RELRO`;
 - `objdump -d --disassemble=main fib` подтверждает наличие цикла с `test`, `je`, `dec` и `jne`;
 - рассчитанный ввод полностью обезвреживает четыре основные и скрытую фазы `bomb_hard`.
+
+## Дополнительный opt-in benchmark для AMD Zen 5
+
+Отдельное упражнение сравнивает сложение массивов `uint32_t` по модулю `2^32`:
+
+- [`array_add_scalar.s`](array_add_scalar.s) — portable scalar x86-64 baseline;
+- [`array_add_zen5_avx512f.s`](array_add_zen5_avx512f.s) — 16 элементов за итерацию через `vmovdqu32` и `vpaddd`;
+- [`array_add_dispatch.c`](array_add_dispatch.c) — real-host CPUID/XGETBV dispatch;
+- [`array_add_test.c`](array_add_test.c) — tails, alignment offsets, aliasing, canaries, guard pages и synthetic selector matrix;
+- [`array_add_bench.c`](array_add_bench.c) — paired AB/BA timing, raw JSONL, MAD, bootstrap CI и отдельный peak RSS mode;
+- [`ZEN5_ARRAY_ADD_REPORT.md`](ZEN5_ARRAY_ADD_REPORT.md) — методика, окружение, raw data и измеренный результат.
+
+Это условная оптимизация, применённая вручную для известного hardware target. Обычные `hello`, `sum` и `fib` не требуют Zen 5 и не менялись.
+
+### Безопасный dispatch
+
+AVX-512 код находится только в отдельном assembly symbol. Остальной executable собирается с portable `-march=x86-64`, без глобального `-mavx512f` или `-march=native`.
+
+Векторный backend выбирается только когда real-host проверка подтверждает:
+
+- `AuthenticAMD`, family `0x1A`, измеренный model allowlist `0x44`;
+- CPUID `XSAVE`, `OSXSAVE`, `AVX`;
+- после этих проверок — `XGETBV(0)` mask `0xE6`;
+- CPUID leaf 7 `AVX-512F`.
+
+Иначе `AUTO` возвращает scalar fallback. Synthetic тестовые данные выбирают только enum backend и не могут вернуть исполняемый function pointer.
+
+### Сборка и correctness
+
+```sh
+make clean all array-add
+make test-array-add
+make test-array-add-zen5       # требует target CPU и реальный vector run
+make array-add-test-sanitize
+./array-add-test-sanitize --require-vector
+```
+
+`all` по-прежнему собирает только исходные учебные программы. Array-add targets не наследуют учебный `-no-pie`: они собираются как PIE с RELRO, NOW и non-executable stack.
+
+### Benchmark
+
+Runtime mode требует affinity ровно к одному logical CPU, не менее 21 samples и не менее 5 ms на timed interval:
+
+```sh
+taskset -c 2 ./array-add-bench info
+
+taskset -c 2 ./array-add-bench compare \
+  --elements 16777216 \
+  --samples 101 \
+  --warmups 10 \
+  --inner 1 \
+  --seed 1592594996 \
+  --alignment 64 \
+  --offset-u32 0
+```
+
+Если timed interval короче 5 ms, увеличьте `--inner`. Для проверки cache-line crossing можно повторить с `--offset-u32 1`.
+
+Peak RSS измеряется отдельными процессами и не используется как runtime sample:
+
+```sh
+/usr/bin/time -f "%M" taskset -c 2 ./array-add-bench rss \
+  --impl scalar --elements 16777216 --seed 1592594996 \
+  --alignment 64 --offset-u32 0
+
+/usr/bin/time -f "%M" taskset -c 2 ./array-add-bench rss \
+  --impl zen5 --elements 16777216 --seed 1592594996 \
+  --alignment 64 --offset-u32 0
+```
+
+Scalar и AVX-512 используют одинаковые три массива. Ускорение не означает уменьшение памяти; peak RSS публикуется отдельной метрикой.

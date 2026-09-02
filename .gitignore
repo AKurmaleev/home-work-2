@@ -2,3 +2,6 @@
 /sum
 /fib
 *.o
+/array-add-test
+/array-add-bench
+/array-add-test-sanitize
