@@ -3,5 +3,9 @@
 /fib
 *.o
 /array-add-test
+/array-add-stats-test
 /array-add-bench
+/array-add-rss-analyze
 /array-add-test-sanitize
+/array-add-stats-test-sanitize
+/array-add-rss-analyze-sanitize

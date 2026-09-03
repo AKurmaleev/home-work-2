@@ -1,0 +1,1 @@
+{"type":"info","cpu":{"genuine_amd":true,"family":26,"model":68,"xcr0":"0x00000000000000e7","xsave":true,"osxsave":true,"avx":true,"avx512f":true,"avx512_os_state":true,"zen5":true},"resolutions":{"auto":{"status":"ok","backend":"zen5-avx512f"},"scalar":{"status":"ok","backend":"scalar"},"zen5":{"status":"ok","backend":"zen5-avx512f"}}}

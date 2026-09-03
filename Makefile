@@ -8,10 +8,15 @@ ARRAY_ADD_LDFLAGS := -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 ARRAY_ADD_SOURCES := array_add_dispatch.c array_add_scalar.s \
 	array_add_zen5_avx512f.s array_add_xgetbv.s
 ARRAY_ADD_HEADERS := array_add.h array_add_internal.h
+ARRAY_ADD_STATS_SOURCE := array_add_stats.c
+ARRAY_ADD_STATS_HEADER := array_add_stats.h
 ARRAY_ADD_LIBS := -lm
 
-.PHONY: all run array-add test-array-add test-array-add-zen5 \
-	array-add-test-sanitize clean
+.PHONY: all run array-add test-array-add test-array-add-stats \
+	test-array-add-rss-analyze test-array-add-zen5 \
+	array-add-test-sanitize array-add-stats-test-sanitize \
+	array-add-rss-analyze-sanitize \
+	test-array-add-rss-analyze-sanitize clean
 
 all: $(PROGRAMS)
 
@@ -29,18 +34,41 @@ run: all
 	./sum
 	./fib
 
-array-add: array-add-test array-add-bench
+array-add: array-add-test array-add-stats-test array-add-bench \
+	array-add-rss-analyze
 
 array-add-test: array_add_test.c $(ARRAY_ADD_SOURCES) $(ARRAY_ADD_HEADERS)
 	$(CC) $(ARRAY_ADD_CFLAGS) array_add_test.c $(ARRAY_ADD_SOURCES) \
 		$(ARRAY_ADD_LDFLAGS) $(ARRAY_ADD_LIBS) -o $@
 
-array-add-bench: array_add_bench.c $(ARRAY_ADD_SOURCES) $(ARRAY_ADD_HEADERS)
+array-add-stats-test: array_add_stats_test.c $(ARRAY_ADD_STATS_SOURCE) \
+		$(ARRAY_ADD_STATS_HEADER)
+	$(CC) $(ARRAY_ADD_CFLAGS) array_add_stats_test.c \
+		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_LDFLAGS) \
+		$(ARRAY_ADD_LIBS) -o $@
+
+array-add-bench: array_add_bench.c $(ARRAY_ADD_SOURCES) \
+		$(ARRAY_ADD_HEADERS) $(ARRAY_ADD_STATS_SOURCE) \
+		$(ARRAY_ADD_STATS_HEADER)
 	$(CC) $(ARRAY_ADD_CFLAGS) array_add_bench.c $(ARRAY_ADD_SOURCES) \
-		$(ARRAY_ADD_LDFLAGS) $(ARRAY_ADD_LIBS) -o $@
+		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_LDFLAGS) \
+		$(ARRAY_ADD_LIBS) -o $@
+
+array-add-rss-analyze: array_add_rss_analyze.c $(ARRAY_ADD_STATS_SOURCE) \
+		$(ARRAY_ADD_STATS_HEADER)
+	$(CC) $(ARRAY_ADD_CFLAGS) array_add_rss_analyze.c \
+		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_LDFLAGS) \
+		$(ARRAY_ADD_LIBS) -o $@
 
 test-array-add: array-add-test
 	./array-add-test
+
+test-array-add-stats: array-add-stats-test
+	./array-add-stats-test
+
+test-array-add-rss-analyze: array-add-rss-analyze \
+		array_add_rss_analyze_test.sh
+	sh array_add_rss_analyze_test.sh ./array-add-rss-analyze
 
 test-array-add-zen5: array-add-test
 	./array-add-test --require-vector
@@ -51,6 +79,25 @@ array-add-test-sanitize: array_add_test.c $(ARRAY_ADD_SOURCES) $(ARRAY_ADD_HEADE
 		$(ARRAY_ADD_LDFLAGS) -fsanitize=address,undefined \
 		$(ARRAY_ADD_LIBS) -o $@
 
+array-add-stats-test-sanitize: array_add_stats_test.c \
+		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_STATS_HEADER)
+	$(CC) $(ARRAY_ADD_CFLAGS) -O1 -g -fno-omit-frame-pointer \
+		-fsanitize=address,undefined array_add_stats_test.c \
+		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_LDFLAGS) \
+		-fsanitize=address,undefined $(ARRAY_ADD_LIBS) -o $@
+
+array-add-rss-analyze-sanitize: array_add_rss_analyze.c \
+		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_STATS_HEADER)
+	$(CC) $(ARRAY_ADD_CFLAGS) -O1 -g -fno-omit-frame-pointer \
+		-fsanitize=address,undefined array_add_rss_analyze.c \
+		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_LDFLAGS) \
+		-fsanitize=address,undefined $(ARRAY_ADD_LIBS) -o $@
+
+test-array-add-rss-analyze-sanitize: array-add-rss-analyze-sanitize \
+		array_add_rss_analyze_test.sh
+	sh array_add_rss_analyze_test.sh ./array-add-rss-analyze-sanitize
+
 clean:
-	rm -f $(PROGRAMS) array-add-test array-add-bench \
-		array-add-test-sanitize *.o
+	rm -f $(PROGRAMS) array-add-test array-add-stats-test array-add-bench \
+		array-add-rss-analyze array-add-test-sanitize \
+		array-add-stats-test-sanitize array-add-rss-analyze-sanitize *.o

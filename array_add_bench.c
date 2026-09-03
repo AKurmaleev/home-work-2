@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include "array_add.h"
+#include "array_add_stats.h"
 
 /* Short local names keep CLI and statistics code readable. */
 typedef array_add_u32_backend array_add_backend;
@@ -34,9 +35,15 @@ typedef array_add_u32_resolve_status array_add_status;
 
 #define ALIGNMENT_BYTES 64U
 #define EFFECTIVE_BYTES_PER_ELEMENT 12.0
+#define MINIMUM_PRACTICAL_EFFECT_FRACTION 0.05
 #define PRACTICAL_SPEEDUP_THRESHOLD 1.05
+#define CONFIDENCE_LEVEL 0.95
+#define MAXIMUM_RELATIVE_CI_TOTAL_WIDTH 0.10
 #define MIN_TIMED_INTERVAL_SECONDS 0.005
-#define MIN_COMPARE_SAMPLES 21U
+#define MIN_COMPARE_SAMPLES 101U
+#define MIN_RETAINED_SAMPLES 71U
+#define DEFAULT_COMPARE_SAMPLES 101U
+#define DEFAULT_WARMUPS 10U
 #define BOOTSTRAP_REPLICATES 10000U
 #define BOOTSTRAP_SEED UINT64_C(0x6A09E667F3BCC909)
 
@@ -57,8 +64,10 @@ typedef struct {
     size_t warmups;
     size_t inner;
     uint64_t seed;
+    uint64_t run_id;
     size_t offset_u32;
     alignment_mode alignment;
+    bool run_id_seen;
 } benchmark_options;
 
 typedef struct {
@@ -148,12 +157,14 @@ static array_add_request implementation_request(
 static void default_options(benchmark_options *options)
 {
     options->elements = (size_t)1U << 24U;
-    options->samples = 21U;
-    options->warmups = 5U;
+    options->samples = DEFAULT_COMPARE_SAMPLES;
+    options->warmups = DEFAULT_WARMUPS;
     options->inner = 1U;
     options->seed = UINT64_C(0x243F6A8885A308D3);
+    options->run_id = 0U;
     options->offset_u32 = 0U;
     options->alignment = ALIGNMENT_64;
+    options->run_id_seen = false;
 }
 
 static void print_usage(const char *program)
@@ -163,8 +174,8 @@ static void print_usage(const char *program)
             "  %s info\n"
             "  %s compare [--elements N --samples N --warmups N --inner N "
             "--seed N --alignment malloc|64 --offset-u32 N]\n"
-            "  %s rss --impl auto|scalar|zen5 [--elements N --seed N "
-            "--alignment malloc|64 --offset-u32 N]\n",
+            "  %s rss --impl auto|scalar|zen5 [--run-id N --elements N "
+            "--seed N --alignment malloc|64 --offset-u32 N]\n",
             program, program, program);
 }
 
@@ -206,6 +217,18 @@ static bool parse_seed_option(const char *text, uint64_t *out)
 
     if (!parse_uintmax(text, (uintmax_t)UINT64_MAX, true, &value)) {
         fprintf(stderr, "invalid --seed value: %s\n", text);
+        return false;
+    }
+    *out = (uint64_t)value;
+    return true;
+}
+
+static bool parse_run_id_option(const char *text, uint64_t *out)
+{
+    uintmax_t value;
+
+    if (!parse_uintmax(text, (uintmax_t)UINT64_MAX, true, &value)) {
+        fprintf(stderr, "invalid --run-id value: %s\n", text);
         return false;
     }
     *out = (uint64_t)value;
@@ -275,7 +298,9 @@ static bool parse_options(int argc, char **argv, bool compare_mode,
              strcmp(flag, "--warmups") == 0 ||
              strcmp(flag, "--inner") == 0);
         const bool rss_option =
-            !compare_mode && strcmp(flag, "--impl") == 0;
+            !compare_mode &&
+            (strcmp(flag, "--impl") == 0 ||
+             strcmp(flag, "--run-id") == 0);
         const char *value;
 
         if (!common_option && !compare_option && !rss_option) {
@@ -320,6 +345,11 @@ static bool parse_options(int argc, char **argv, bool compare_mode,
                 return false;
             }
             *implementation_seen = true;
+        } else if (!compare_mode && strcmp(flag, "--run-id") == 0) {
+            if (!parse_run_id_option(value, &options->run_id)) {
+                return false;
+            }
+            options->run_id_seen = true;
         }
     }
     return true;
@@ -621,117 +651,32 @@ static bool time_kernel(const array_add_kernel *kernel, uint32_t *dst,
     return true;
 }
 
-static int compare_double(const void *lhs, const void *rhs)
-{
-    const double lhs_value = *(const double *)lhs;
-    const double rhs_value = *(const double *)rhs;
-
-    return (lhs_value > rhs_value) - (lhs_value < rhs_value);
-}
-
-static double median_sorted(const double *values, size_t count)
-{
-    const size_t middle = count / 2U;
-
-    if ((count & 1U) != 0U) {
-        return values[middle];
-    }
-    return (values[middle - 1U] / 2.0) + (values[middle] / 2.0);
-}
-
-static void compute_median_mad(const double *values, size_t count,
-                               double *scratch, double *median, double *mad)
-{
-    memcpy(scratch, values, count * sizeof(*scratch));
-    qsort(scratch, count, sizeof(*scratch), compare_double);
-    *median = median_sorted(scratch, count);
-
-    for (size_t index = 0U; index < count; ++index) {
-        scratch[index] = fabs(values[index] - *median);
-    }
-    qsort(scratch, count, sizeof(*scratch), compare_double);
-    *mad = median_sorted(scratch, count);
-}
-
-static double quantile_sorted(const double *values, size_t count,
-                              double probability)
-{
-    const double position = probability * (double)(count - 1U);
-    const size_t lower = (size_t)position;
-    const size_t upper = lower + (lower + 1U < count ? 1U : 0U);
-    const double fraction = position - (double)lower;
-
-    return values[lower] + ((values[upper] - values[lower]) * fraction);
-}
-
-static bool compute_bootstrap_ci(const double *log_ratios, size_t samples,
-                                 double *bootstrap, double *speedup,
-                                 double *ci_low, double *ci_high)
-{
-    uint64_t state = BOOTSTRAP_SEED;
-    double log_sum = 0.0;
-
-    for (size_t index = 0U; index < samples; ++index) {
-        log_sum += log_ratios[index];
-    }
-    *speedup = exp(log_sum / (double)samples);
-
-    for (size_t replicate = 0U; replicate < BOOTSTRAP_REPLICATES;
-         ++replicate) {
-        double replicate_sum = 0.0;
-
-        for (size_t draw = 0U; draw < samples; ++draw) {
-            const size_t index =
-                (size_t)(splitmix64_next(&state) % (uint64_t)samples);
-            replicate_sum += log_ratios[index];
-        }
-        bootstrap[replicate] = exp(replicate_sum / (double)samples);
-        if (!isfinite(bootstrap[replicate])) {
-            fprintf(stderr, "non-finite bootstrap result\n");
-            return false;
-        }
-    }
-
-    qsort(bootstrap, BOOTSTRAP_REPLICATES, sizeof(*bootstrap),
-          compare_double);
-    *ci_low = quantile_sorted(bootstrap, BOOTSTRAP_REPLICATES, 0.025);
-    *ci_high = quantile_sorted(bootstrap, BOOTSTRAP_REPLICATES, 0.975);
-    return true;
-}
-
-static bool allocate_sample_storage(size_t samples, double **scalar_seconds,
-                                    double **candidate_seconds,
-                                    double **log_ratios, double **scratch,
-                                    double **bootstrap)
+static bool allocate_pair_storage(size_t samples,
+                                  array_add_pair_sample **pairs)
 {
     size_t sample_bytes;
-    size_t bootstrap_bytes;
 
-    if (!checked_mul_size(samples, sizeof(double), &sample_bytes) ||
-        !checked_mul_size(BOOTSTRAP_REPLICATES, sizeof(double),
-                          &bootstrap_bytes)) {
+    if (!checked_mul_size(samples, sizeof(**pairs), &sample_bytes)) {
         fprintf(stderr, "sample storage size overflow\n");
         return false;
     }
 
-    *scalar_seconds = malloc(sample_bytes);
-    *candidate_seconds = malloc(sample_bytes);
-    *log_ratios = malloc(sample_bytes);
-    *scratch = malloc(sample_bytes);
-    *bootstrap = malloc(bootstrap_bytes);
-    if (*scalar_seconds == NULL || *candidate_seconds == NULL ||
-        *log_ratios == NULL || *scratch == NULL || *bootstrap == NULL) {
+    *pairs = malloc(sample_bytes);
+    if (*pairs == NULL) {
         fprintf(stderr, "sample storage allocation failed\n");
         return false;
     }
     return true;
 }
 
-static const char *comparison_verdict(bool same_backend, double ci_low,
-                                      double ci_high)
+static const char *comparison_verdict(bool same_backend, bool adequate,
+                                      double ci_low, double ci_high)
 {
     if (same_backend) {
         return "same-backend-control";
+    }
+    if (!adequate) {
+        return "inadequate-relative-ci-width";
     }
     if (ci_low >= PRACTICAL_SPEEDUP_THRESHOLD) {
         return "improved";
@@ -753,28 +698,30 @@ static int run_compare(const benchmark_options *options)
     buffer_allocation lhs = {0};
     buffer_allocation rhs = {0};
     buffer_allocation dst = {0};
-    double *scalar_seconds = NULL;
-    double *candidate_seconds = NULL;
-    double *log_ratios = NULL;
-    double *scratch = NULL;
-    double *bootstrap = NULL;
+    array_add_pair_sample *pairs = NULL;
+    array_add_pair_summary summary = {0};
     uint64_t scalar_checksum = 0U;
     uint64_t candidate_checksum = 0U;
-    double scalar_median;
-    double scalar_mad;
-    double candidate_median;
-    double candidate_mad;
-    double speedup;
-    double ci_low;
-    double ci_high;
+    size_t trim_count;
+    size_t retained_count;
     bool same_backend;
+    bool practical_gain_proven;
     int pinned_cpu = -1;
     int affinity_count = 0;
     int result = EXIT_FAILURE;
 
     if (options->samples < MIN_COMPARE_SAMPLES) {
-        fprintf(stderr, "compare requires at least %u measured samples\n",
+        fprintf(stderr, "compare requires at least %u measured pairs\n",
                 MIN_COMPARE_SAMPLES);
+        return EXIT_FAILURE;
+    }
+    trim_count = array_add_stats_trim_count(options->samples);
+    retained_count = options->samples - (2U * trim_count);
+    if (retained_count < MIN_RETAINED_SAMPLES) {
+        fprintf(stderr,
+                "compare requires at least %u retained pairs after trimming "
+                "(got %zu)\n",
+                MIN_RETAINED_SAMPLES, retained_count);
         return EXIT_FAILURE;
     }
     if (!get_single_cpu_affinity(&pinned_cpu, &affinity_count)) {
@@ -790,9 +737,7 @@ static int run_compare(const benchmark_options *options)
                          options->alignment) ||
         !allocate_buffer(&dst, options->elements, options->offset_u32,
                          options->alignment) ||
-        !allocate_sample_storage(options->samples, &scalar_seconds,
-                                 &candidate_seconds, &log_ratios, &scratch,
-                                 &bootstrap)) {
+        !allocate_pair_storage(options->samples, &pairs)) {
         goto cleanup;
     }
 
@@ -824,56 +769,72 @@ static int run_compare(const benchmark_options *options)
     }
 
     for (size_t sample = 0U; sample < options->samples; ++sample) {
-        const bool ab_order = (sample & 1U) == 0U;
+        array_add_pair_sample *pair = &pairs[sample];
 
-        if (ab_order) {
+        pair->sample_id = sample + 1U;
+        pair->ab_order = (sample & 1U) == 0U;
+        if (pair->ab_order) {
             if (!time_kernel(&scalar, dst.data, lhs.data, rhs.data,
                              options->elements, options->inner, pinned_cpu,
-                             &scalar_seconds[sample]) ||
+                             &pair->scalar_seconds) ||
                 !time_kernel(&candidate, dst.data, lhs.data, rhs.data,
                              options->elements, options->inner, pinned_cpu,
-                             &candidate_seconds[sample])) {
+                             &pair->candidate_seconds)) {
                 goto cleanup;
             }
         } else if (!time_kernel(&candidate, dst.data, lhs.data, rhs.data,
                                 options->elements, options->inner, pinned_cpu,
-                                &candidate_seconds[sample]) ||
+                                &pair->candidate_seconds) ||
                    !time_kernel(&scalar, dst.data, lhs.data, rhs.data,
                                 options->elements, options->inner, pinned_cpu,
-                                &scalar_seconds[sample])) {
-            goto cleanup;
-        }
-
-        log_ratios[sample] =
-            log(scalar_seconds[sample] / candidate_seconds[sample]);
-        if (!isfinite(log_ratios[sample])) {
-            fprintf(stderr, "non-finite paired log ratio\n");
+                                &pair->scalar_seconds)) {
             goto cleanup;
         }
     }
 
-    compute_median_mad(scalar_seconds, options->samples, scratch,
-                       &scalar_median, &scalar_mad);
-    compute_median_mad(candidate_seconds, options->samples, scratch,
-                       &candidate_median, &candidate_mad);
-    if (!compute_bootstrap_ci(log_ratios, options->samples, bootstrap,
-                              &speedup, &ci_low, &ci_high)) {
+    if (!array_add_stats_analyze_pairs(
+            pairs, options->samples, BOOTSTRAP_REPLICATES, BOOTSTRAP_SEED,
+            CONFIDENCE_LEVEL, MAXIMUM_RELATIVE_CI_TOTAL_WIDTH, &summary)) {
+        fprintf(stderr, "paired statistics analysis failed\n");
         goto cleanup;
     }
 
     same_backend = scalar.backend == candidate.backend;
+    practical_gain_proven =
+        !same_backend && summary.adequacy_criterion_met &&
+        summary.paired_bootstrap_ci_low >= PRACTICAL_SPEEDUP_THRESHOLD;
     printf("{\"type\":\"config\",\"command\":\"compare\","
            "\"elements\":%zu,\"samples\":%zu,\"warmups\":%zu,"
+           "\"warmups_excluded_from_analysis\":true,"
            "\"inner\":%zu,\"seed\":%" PRIu64 ","
            "\"alignment\":\"%s\",\"offset_u32\":%zu,"
            "\"actual_mod_64\":{\"lhs\":%" PRIuPTR
            ",\"rhs\":%" PRIuPTR ",\"dst\":%" PRIuPTR "},"
            "\"clock\":\"CLOCK_MONOTONIC_RAW\","
            "\"pinned_cpu\":%d,\"affinity_count\":%d,"
+           "\"experimental_unit\":\"paired-A/B-timing-pair\","
            "\"pairing\":\"alternating-AB-BA\","
+           "\"primary_metric\":\"ln(scalar/candidate)\","
+           "\"trim_fraction_each_tail\":0.15,"
+           "\"trim_count_formula\":\"floor(N*15/100)\","
+           "\"whole_pair_trimming\":true,"
+           "\"trim_sort\":\"paired_log_ratio_ascending\","
+           "\"trim_tie_policy\":"
+           "\"sample_id_ascending_then_acquisition_index\","
+           "\"shared_retained_pair_set_for_all_statistics\":true,"
+           "\"bootstrap_method\":"
+           "\"retained-only-paired-percentile\","
+           "\"bootstrap_retrim_each_replicate\":false,"
+           "\"confidence_level\":%.2f,"
+           "\"minimum_practical_effect_fraction\":%.2f,"
+           "\"practical_speedup_threshold\":%.2f,"
+           "\"adequacy_max_relative_ci_total_width\":%.2f,"
+           "\"adequacy_relative_ci_total_width_definition\":"
+           "\"(ci_high-ci_low)/point_estimate\","
+           "\"ad_hoc_outlier_removal\":false,"
            "\"baseline_backend\":\"%s\","
            "\"candidate_backend\":\"%s\","
-           "\"same_backend\":%s,\"outlier_removal\":false,"
+           "\"same_backend\":%s,"
            "\"effective_bandwidth_model\":"
            "\"12-algorithmic-bytes-per-element\","
            "\"cpu\":{\"genuine_amd\":%s,\"family\":%" PRIu32
@@ -885,60 +846,118 @@ static int run_compare(const benchmark_options *options)
            (uintptr_t)lhs.data % (uintptr_t)ALIGNMENT_BYTES,
            (uintptr_t)rhs.data % (uintptr_t)ALIGNMENT_BYTES,
            (uintptr_t)dst.data % (uintptr_t)ALIGNMENT_BYTES, pinned_cpu,
-           affinity_count, array_add_backend_name(scalar.backend),
+           affinity_count, CONFIDENCE_LEVEL,
+           MINIMUM_PRACTICAL_EFFECT_FRACTION, PRACTICAL_SPEEDUP_THRESHOLD,
+           MAXIMUM_RELATIVE_CI_TOTAL_WIDTH,
+           array_add_backend_name(scalar.backend),
            array_add_backend_name(candidate.backend), json_bool(same_backend),
            json_bool(cpu.genuine_amd), (uint32_t)cpu.family,
            (uint32_t)cpu.model, (uint64_t)cpu.xcr0,
            json_bool(cpu_is_zen5(&cpu)));
 
     for (size_t sample = 0U; sample < options->samples; ++sample) {
+        const array_add_pair_sample *pair = &pairs[sample];
+
         printf("{\"type\":\"sample\",\"sample\":%zu,"
-               "\"order\":\"%s\",\"scalar_seconds\":%.9f,"
-               "\"candidate_seconds\":%.9f,"
-               "\"paired_speedup_scalar_over_candidate\":%.9f,"
-               "\"paired_log_ratio\":%.9f}\n",
-               sample + 1U, (sample & 1U) == 0U ? "AB" : "BA",
-               scalar_seconds[sample], candidate_seconds[sample],
-               scalar_seconds[sample] / candidate_seconds[sample],
-               log_ratios[sample]);
+               "\"order\":\"%s\",\"scalar_seconds\":"
+               ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+               "\"candidate_seconds\":" ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+               "\"paired_speedup_scalar_over_candidate\":"
+               ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+               "\"paired_log_ratio\":" ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+               "\"paired_log_ratio_rank\":%zu,"
+               "\"trim_class\":\"%s\",\"retained\":%s}\n",
+               pair->sample_id, pair->ab_order ? "AB" : "BA",
+               pair->scalar_seconds, pair->candidate_seconds,
+               pair->scalar_seconds / pair->candidate_seconds,
+               pair->paired_log_ratio, pair->paired_log_ratio_rank,
+               array_add_stats_trim_class_name(pair->trim_class),
+               json_bool(pair->trim_class == ARRAY_ADD_TRIM_RETAINED));
     }
 
     printf("{\"type\":\"summary\","
-           "\"scalar_median_seconds\":%.9f,"
-           "\"scalar_mad_seconds\":%.9f,"
-           "\"candidate_median_seconds\":%.9f,"
-           "\"candidate_mad_seconds\":%.9f,"
-           "\"scalar_effective_algorithmic_bandwidth_gbs_12_bytes_per_element\":%.6f,"
-           "\"candidate_effective_algorithmic_bandwidth_gbs_12_bytes_per_element\":%.6f,"
-           "\"paired_log_ratio_geomean_speedup\":%.9f,"
-           "\"paired_bootstrap_95pct_ci\":[%.9f,%.9f],"
+           "\"raw_pair_count\":%zu,\"trim_count_per_tail\":%zu,"
+           "\"retained_pair_count\":%zu,"
+           "\"scalar_trimmed_arithmetic_mean_seconds\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"scalar_retained_median_seconds\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"scalar_retained_mad_seconds\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"candidate_trimmed_arithmetic_mean_seconds\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"candidate_retained_median_seconds\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"candidate_retained_mad_seconds\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"ratio_of_trimmed_arithmetic_means_scalar_over_candidate\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"retained_paired_geomean_speedup_scalar_over_candidate\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"candidate_time_reduction_fraction\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"scalar_effective_algorithmic_bandwidth_gbs_12_bytes_per_element_trimmed_mean_denominator\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"scalar_effective_algorithmic_bandwidth_gbs_12_bytes_per_element_retained_median_denominator\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"candidate_effective_algorithmic_bandwidth_gbs_12_bytes_per_element_trimmed_mean_denominator\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"candidate_effective_algorithmic_bandwidth_gbs_12_bytes_per_element_retained_median_denominator\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"retained_only_paired_bootstrap_95pct_ci\":["
+           ARRAY_ADD_JSON_DOUBLE_FORMAT "," ARRAY_ADD_JSON_DOUBLE_FORMAT "],"
+           "\"paired_bootstrap_relative_ci_total_width\":"
+           ARRAY_ADD_JSON_DOUBLE_FORMAT ","
+           "\"adequacy_max_relative_ci_total_width\":%.2f,"
+           "\"adequacy_relative_ci_total_width_definition\":"
+           "\"(ci_high-ci_low)/point_estimate\","
+           "\"adequacy_criterion_met\":%s,"
            "\"bootstrap_replicates\":%u,"
            "\"bootstrap_seed\":%" PRIu64 ","
+           "\"confidence_level\":%.2f,"
+           "\"minimum_practical_effect_fraction\":%.2f,"
            "\"practical_speedup_threshold\":%.2f,"
            "\"practical_gain_proven\":%s,\"verdict\":\"%s\","
            "\"validation\":{\"elementwise\":true,"
            "\"scalar_checksum\":\"%016" PRIx64 "\","
            "\"candidate_checksum\":\"%016" PRIx64 "\"}}\n",
-           scalar_median, scalar_mad, candidate_median, candidate_mad,
+           summary.raw_pair_count, summary.trim_count_per_tail,
+           summary.retained_pair_count,
+           summary.scalar_trimmed_mean_seconds,
+           summary.scalar_retained_median_seconds,
+           summary.scalar_retained_mad_seconds,
+           summary.candidate_trimmed_mean_seconds,
+           summary.candidate_retained_median_seconds,
+           summary.candidate_retained_mad_seconds,
+           summary.ratio_of_trimmed_means,
+           summary.paired_geomean_speedup,
+           summary.candidate_time_reduction_fraction,
            ((double)options->elements * EFFECTIVE_BYTES_PER_ELEMENT) /
-               scalar_median / 1.0e9,
+               summary.scalar_trimmed_mean_seconds / 1.0e9,
            ((double)options->elements * EFFECTIVE_BYTES_PER_ELEMENT) /
-               candidate_median / 1.0e9,
-           speedup, ci_low, ci_high, BOOTSTRAP_REPLICATES,
-           BOOTSTRAP_SEED, PRACTICAL_SPEEDUP_THRESHOLD,
-           json_bool(!same_backend &&
-                     ci_low >= PRACTICAL_SPEEDUP_THRESHOLD),
-           comparison_verdict(same_backend, ci_low, ci_high), scalar_checksum,
-           candidate_checksum);
+               summary.scalar_retained_median_seconds / 1.0e9,
+           ((double)options->elements * EFFECTIVE_BYTES_PER_ELEMENT) /
+               summary.candidate_trimmed_mean_seconds / 1.0e9,
+           ((double)options->elements * EFFECTIVE_BYTES_PER_ELEMENT) /
+               summary.candidate_retained_median_seconds / 1.0e9,
+           summary.paired_bootstrap_ci_low,
+           summary.paired_bootstrap_ci_high,
+           summary.paired_bootstrap_relative_ci_total_width,
+           MAXIMUM_RELATIVE_CI_TOTAL_WIDTH,
+           json_bool(summary.adequacy_criterion_met), BOOTSTRAP_REPLICATES,
+           BOOTSTRAP_SEED, CONFIDENCE_LEVEL,
+           MINIMUM_PRACTICAL_EFFECT_FRACTION, PRACTICAL_SPEEDUP_THRESHOLD,
+           json_bool(practical_gain_proven),
+           comparison_verdict(same_backend,
+                              summary.adequacy_criterion_met,
+                              summary.paired_bootstrap_ci_low,
+                              summary.paired_bootstrap_ci_high),
+           scalar_checksum, candidate_checksum);
 
     result = EXIT_SUCCESS;
 
 cleanup:
-    free(bootstrap);
-    free(scratch);
-    free(log_ratios);
-    free(candidate_seconds);
-    free(scalar_seconds);
+    free(pairs);
     free_buffer(&dst);
     free_buffer(&rhs);
     free_buffer(&lhs);
@@ -981,6 +1000,7 @@ static int run_rss(const benchmark_options *options,
     }
 
     printf("{\"type\":\"rss_result\",\"result\":\"ok\","
+           "\"run_id\":%" PRIu64 ",\"run_id_supplied\":%s,"
            "\"requested_impl\":\"%s\",\"resolved_backend\":\"%s\","
            "\"elements\":%zu,\"data_bytes_per_array\":%zu,"
            "\"array_allocations\":3,\"seed\":%" PRIu64 ","
@@ -990,6 +1010,7 @@ static int run_rss(const benchmark_options *options,
            "\"pages_fully_touched\":true,\"backend_executions\":1,"
            "\"elementwise_valid\":true,\"checksum\":\"%016" PRIx64
            "\",\"linux_ru_maxrss_kib\":%ld,\"timing_claim\":false}\n",
+           options->run_id, json_bool(options->run_id_seen),
            implementation_name(implementation),
            array_add_backend_name(kernel.backend), options->elements,
            data_bytes, options->seed, alignment_name(options->alignment),
