@@ -1,40 +1,40 @@
-# Дополнительный benchmark: scalar и AVX-512
+# Additional benchmark: scalar and AVX-512
 
-Этот отчёт относится к бонусному упражнению. Основные задания `hello`, `sum`, `fib` и Binary Bomb от него не зависят.
+This report covers the bonus exercise. The main `hello`, `sum`, `fib`, and Binary Bomb exercises do not depend on it.
 
-## Цель
+## Goal
 
-Сравнить две x86-64 реализации операции:
+Compare two x86-64 implementations of the operation:
 
 ```text
 dst[i] = lhs[i] + rhs[i] modulo 2^32
 ```
 
-Проверяются время выполнения, алгоритмическая сложность и пиковая память процесса на больших данных.
+Runtime, algorithmic complexity, and peak process memory are evaluated on large datasets.
 
-## Реализации
+## Implementations
 
-- [`array_add_scalar.s`](array_add_scalar.s) обрабатывает один `uint32_t` за итерацию.
-- [`array_add_zen5_avx512f.s`](array_add_zen5_avx512f.s) обрабатывает 16 элементов инструкцией `vpaddd`, затем scalar-кодом обрабатывает хвост.
-- [`array_add_dispatch.c`](array_add_dispatch.c) проверяет CPU-возможности и состояние расширенных регистров ОС через CPUID/XGETBV. При отсутствии необходимых возможностей выбирается scalar fallback.
+- [`array_add_scalar.s`](array_add_scalar.s) processes one `uint32_t` per iteration.
+- [`array_add_zen5_avx512f.s`](array_add_zen5_avx512f.s) processes 16 elements using `vpaddd`, then handles the tail with scalar code.
+- [`array_add_dispatch.c`](array_add_dispatch.c) checks CPU capabilities and OS extended-register state through CPUID/XGETBV. If the required capabilities are unavailable, the scalar fallback is selected.
 
-Обе функции имеют одинаковый контракт и корректно работают с выровненными и смещёнными адресами.
+Both functions have the same contract and work correctly with aligned and offset addresses.
 
-## Проверка корректности
+## Correctness verification
 
-Тесты покрывают:
+Tests cover:
 
-- пустые, малые и большие массивы;
-- длины вокруг границы в 16 элементов;
-- разные смещения и невыровненные адреса;
-- допустимое наложение `dst` на входной массив;
-- canary-значения и guard pages;
-- обязательное выполнение векторной функции на поддерживаемом CPU;
-- выбор scalar fallback при неподходящих CPU-возможностях.
+- empty, small, and large arrays;
+- lengths around the 16-element boundary;
+- different offsets and unaligned addresses;
+- permitted overlap of `dst` with an input array;
+- canary values and guard pages;
+- mandatory execution of the vector function on a supported CPU;
+- selection of the scalar fallback when CPU capabilities are unsuitable.
 
-Всего проверено **42 697** случаев. Сборка Clang с `-Werror`, обычные тесты и проверки с ASan/UBSan завершились успешно.
+A total of **42 697** cases were checked. The Clang build with `-Werror`, regular tests, and ASan/UBSan checks completed successfully.
 
-Основные команды:
+Main commands:
 
 ```sh
 make array-add
@@ -42,74 +42,74 @@ make test-array-add
 make test-array-add-zen5
 ```
 
-## Методика
+## Methodology
 
-Измерения выполнены под WSL2 на машине с AMD Ryzen 9 9950X.
+Measurements were taken under WSL2 on a machine with an AMD Ryzen 9 9950X.
 
-Один запуск обрабатывает `16,777,216` элементов. `lhs`, `rhs` и `dst` занимают по 64 MiB, общий объём данных — **192 MiB**.
+One run processes `16,777,216` elements. `lhs`, `rhs`, and `dst` occupy 64 MiB each, for a total data size of **192 MiB**.
 
-Проверены две раскладки:
+Two layouts were tested:
 
-- адреса выровнены на 64 bytes;
-- адреса смещены на 4 bytes относительно 64-byte границы.
+- addresses aligned to 64 bytes;
+- addresses offset by 4 bytes from a 64-byte boundary.
 
-Для каждой раскладки:
+For each layout:
 
-1. Входные данные создаются до измеряемого участка.
-2. Результаты scalar и AVX-512 сверяются.
-3. Выполняются 10 прогревочных пар, не включённых в статистику.
-4. Измеряется 101 пара запусков с чередованием порядка scalar/AVX-512.
-5. Исключаются 15 пар с каждого края распределения сравнительных результатов; остаётся 71 пара.
-6. Для обеих реализаций рассчитываются среднее и медиана по одной сохранённой выборке.
+1. Input data is created before the measured section.
+2. Scalar and AVX-512 results are checked against each other.
+3. 10 warm-up pairs are executed and excluded from the statistics.
+4. 101 pairs of runs are measured, alternating the scalar/AVX-512 order.
+5. 15 pairs are excluded from each tail of the comparative-result distribution, leaving 71 pairs.
+6. The mean and median for both implementations are calculated from the same retained sample.
 
-Peak RSS измеряется отдельно от времени. Для каждой реализации выполняется один прогрев и 31 запуск в новом процессе; после исключения 15% значений с каждого края остаётся 23 наблюдения.
+Peak RSS is measured separately from runtime. Each implementation has one warm-up and 31 runs in fresh processes; after excluding 15% of values from each tail, 23 observations remain.
 
-## Результаты
+## Results
 
-### Время
+### Runtime
 
-Все времена указаны в миллисекундах.
+All times are in milliseconds.
 
-| Раскладка | Scalar mean / median | AVX-512 mean / median | Ускорение |
+| Layout | Scalar mean / median | AVX-512 mean / median | Speedup |
 |---|---:|---:|---:|
 | 64-byte aligned | 8.078 / 8.085 | 5.594 / 5.594 | 1.44× |
 | offset +4 bytes | 7.901 / 7.756 | 6.033 / 5.946 | 1.31× |
 
-AVX-512 реализация была быстрее scalar в обеих сериях. Серии для двух раскладок выполнялись отдельно, поэтому разницу между `1.44×` и `1.31×` нельзя приписать только выравниванию.
+The AVX-512 implementation was faster than scalar in both series. The series for the two layouts were run separately, so the difference between `1.44×` and `1.31×` cannot be attributed solely to alignment.
 
-### Память
+### Memory
 
-Peak RSS приведён в KiB.
+Peak RSS is reported in KiB.
 
-| Реализация | Mean | Median |
+| Implementation | Mean | Median |
 |---|---:|---:|
 | Scalar | 198,249.7 | 198,272 |
 | AVX-512 | 198,272.0 | 198,272 |
 
-Практического уменьшения памяти нет. Разница среднего peak RSS составляет около `0.01%`, то есть находится на уровне шума относительно общего объёма процесса.
+There is no practical memory reduction. The difference in mean peak RSS is about `0.01%`, which is at the noise level relative to the total process size.
 
-### Сложность и представление данных
+### Complexity and data representation
 
-| Характеристика | Scalar | AVX-512 |
+| Characteristic | Scalar | AVX-512 |
 |---|---|---|
-| Временная сложность | `Θ(n)` | `Θ(n)` |
-| Дополнительная память функции | `Θ(1)` | `Θ(1)` |
-| Выделения памяти внутри функции | 0 | 0 |
-| Массивы вызывающего кода | 192 MiB | 192 MiB |
+| Time complexity | `Θ(n)` | `Θ(n)` |
+| Function auxiliary memory | `Θ(1)` | `Θ(1)` |
+| Allocations inside the function | 0 | 0 |
+| Caller-owned arrays | 192 MiB | 192 MiB |
 
-Векторизация меняет число элементов, обрабатываемых одной итерацией, но не алгоритмический класс и не представление данных.
+Vectorization changes the number of elements processed per iteration, but not the algorithmic class or data representation.
 
-## Ограничения
+## Limitations
 
-WSL2 не позволяет полностью контролировать power state процессора, размещение потока по CCD/V-Cache и состояние соседнего SMT-потока. Также сравнение scalar и AVX-512 изолирует различия реализаций, но не влияние самой микроархитектуры.
+WSL2 does not allow full control over CPU power state, thread placement across CCD/V-Cache, or the state of the neighboring SMT thread. In addition, comparing scalar and AVX-512 isolates differences between implementations, but not the effect of the microarchitecture itself.
 
-Поэтому результат означает только следующее: **в этом WSL2 benchmark AVX-512 реализация быстрее scalar реализации**. Он не доказывает, что ускорение вызвано именно Zen 5 или что такой же коэффициент сохранится в другой системе.
+Therefore, the result means only the following: **in this WSL2 benchmark, the AVX-512 implementation is faster than the scalar implementation**. It does not prove that the speedup was caused specifically by Zen 5 or that the same factor will hold on another system.
 
-Для подтверждения специфической оптимизации Zen 5 нужен повтор на native Linux или Windows с контролем CPU topology, power mode и аппаратными счётчиками производительности.
+Confirming a Zen 5-specific optimization requires a repeat on native Linux or Windows with control over CPU topology and power mode, and with hardware performance counters.
 
-## Вывод
+## Conclusion
 
-На workload размером 192 MiB AVX-512 сократила время выполнения примерно в `1.44×` для выровненных адресов и в `1.31×` при смещении на 4 bytes. Peak RSS и асимптотические затраты памяти не изменились. Специфический эффект Zen 5 под WSL2 не подтверждён.
+On a 192 MiB workload, AVX-512 reduced runtime by a factor of approximately `1.44×` for aligned addresses and `1.31×` with an offset of 4 bytes. Peak RSS and asymptotic memory costs did not change. A Zen 5-specific effect under WSL2 has not been confirmed.
 
 ## Raw data
 

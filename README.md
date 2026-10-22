@@ -1,26 +1,26 @@
 # Assembly + Binary Bomb
 
-Домашняя работа по x86-64 assembly для Linux. Ассемблерные исходники написаны в AT&T-синтаксисе, используют System V AMD64 ABI и собираются через `clang`.
+An x86-64 assembly homework assignment for Linux. The assembly sources use AT&T syntax and the System V AMD64 ABI, and are built with `clang`.
 
-## Состав работы
+## Assignment contents
 
-| Задача | Файл | Результат |
+| Task | File | Result |
 |---|---|---|
-| Hello, world! | [`hello.s`](hello.s) | Выводит `Hello, world!` через `puts` |
-| Сложение | [`sum.s`](sum.s) | Складывает `20` и `22` инструкцией `addq`, выводит `42` |
-| Fibonacci | [`fib.s`](fib.s) | Циклом вычисляет `F(10)`, выводит `55` |
-| Binary Bomb | [`BOMB_REPORT.md`](BOMB_REPORT.md) | Содержит ответы и краткий разбор всех фаз |
+| Hello, world! | [`hello.s`](hello.s) | Prints `Hello, world!` using `puts` |
+| Addition | [`sum.s`](sum.s) | Adds `20` and `22` using `addq`, prints `42` |
+| Fibonacci | [`fib.s`](fib.s) | Computes `F(10)` in a loop, prints `55` |
+| Binary Bomb | [`BOMB_REPORT.md`](BOMB_REPORT.md) | Contains answers and a brief analysis of all phases |
 
-`Makefile` собирает и запускает три ассемблерные программы. Скомпилированные ELF-файлы и объектные файлы не входят в репозиторий.
+`Makefile` builds and runs the three assembly programs. Compiled ELF files and object files are not included in the repository.
 
-## Требования
+## Requirements
 
 - Linux x86-64;
 - `clang`;
 - GNU Make;
 - libc.
 
-## Сборка и запуск
+## Build and run
 
 ```sh
 make clean all
@@ -28,7 +28,7 @@ make run
 make clean
 ```
 
-Ожидаемый вывод:
+Expected output:
 
 ```text
 Hello, world!
@@ -36,7 +36,7 @@ Hello, world!
 F(10) = 55
 ```
 
-Эквивалентная ручная сборка:
+Equivalent manual build:
 
 ```sh
 clang -no-pie hello.s -o hello
@@ -44,66 +44,66 @@ clang -no-pie sum.s -o sum
 clang -no-pie fib.s -o fib
 ```
 
-`-no-pie` используется только как учебное упрощение для стабильных адресов в `objdump` и GDB. Это не production-рекомендация.
+`-no-pie` is used only as an educational simplification to provide stable addresses in `objdump` and GDB. It is not a production recommendation.
 
-## Реализация
+## Implementation
 
-### Общие детали ABI
+### General ABI details
 
-- Точка входа каждой программы — `main`, поэтому запуск и завершение обслуживает libc.
-- Первый и второй целочисленные аргументы функций передаются через `%rdi` и `%rsi`.
-- Перед variadic-вызовом `printf` регистр `%eax` обнуляется согласно System V AMD64 ABI.
-- `pushq %rbp` обеспечивает требуемое выравнивание стека перед вызовом libc.
-- Строки находятся в `.rodata` и адресуются относительно `%rip`.
-- `.note.GNU-stack` оставляет стек неисполняемым.
+- Each program's entry point is `main`, so libc handles startup and termination.
+- The first and second integer function arguments are passed through `%rdi` and `%rsi`.
+- Before a variadic `printf` call, `%eax` is zeroed as required by the System V AMD64 ABI.
+- `pushq %rbp` provides the required stack alignment before calling libc.
+- Strings reside in `.rodata` and use `%rip`-relative addressing.
+- `.note.GNU-stack` keeps the stack non-executable.
 
-### Сложение
+### Addition
 
-- `%rax` хранит первое слагаемое, затем результат.
-- `%rcx` хранит второе слагаемое.
-- `addq %rcx, %rax` выполняет сложение.
-- `%rdi` и `%rsi` передают формат и результат в `printf`.
+- `%rax` holds the first addend, then the result.
+- `%rcx` holds the second addend.
+- `addq %rcx, %rax` performs the addition.
+- `%rdi` and `%rsi` pass the format and result to `printf`.
 
 ### Fibonacci
 
-- `%rax` хранит текущее значение `F(i)`.
-- `%rdx` хранит следующее значение `F(i + 1)`.
-- `%r8` временно хранит сумму.
-- `%rcx` хранит число оставшихся итераций.
+- `%rax` holds the current value `F(i)`.
+- `%rdx` holds the next value `F(i + 1)`.
+- `%r8` temporarily holds the sum.
+- `%rcx` holds the number of remaining iterations.
 
-Каждая итерация переводит пару `(F(i), F(i + 1))` в `(F(i + 1), F(i + 2))`. Результат вычисляется циклом, а не загружается готовой константой.
+Each iteration transforms the pair `(F(i), F(i + 1))` into `(F(i + 1), F(i + 2))`. The result is computed in a loop, not loaded as a precomputed constant.
 
 ## Binary Bomb
 
-Бомба исследована в AT&T-синтаксисе с помощью `file`, `strings`, `nm`, `readelf`, `objdump` и GDB. Проверялись функции `phase_1`–`phase_4`, рекурсивная `fib`, `secret_phase` и путь к `explode_bomb`.
+The bomb was analyzed in AT&T syntax using `file`, `strings`, `nm`, `readelf`, `objdump`, and GDB. The functions `phase_1`–`phase_4`, the recursive `fib`, `secret_phase`, and the path to `explode_bomb` were examined.
 
-Ответы, найденные сравнения, условные переходы, таблица переходов и использованные команды приведены в [`BOMB_REPORT.md`](BOMB_REPORT.md).
+The answers, identified comparisons, conditional branches, jump table, and commands used are documented in [`BOMB_REPORT.md`](BOMB_REPORT.md).
 
-## Проверка
+## Verification
 
-Работа проверена на Ubuntu 24.04 x86-64 с Clang 18:
+The assignment was verified on Ubuntu 24.04 x86-64 with Clang 18:
 
-- `make clean all run` успешно собирает и запускает все программы;
-- `file` подтверждает ELF64 x86-64;
-- `readelf -lW` показывает `GNU_STACK` без права исполнения и наличие `GNU_RELRO`;
-- `objdump -d --disassemble=main fib` подтверждает наличие цикла с `test`, `je`, `dec` и `jne`;
-- рассчитанный ввод полностью обезвреживает четыре основные и скрытую фазы `bomb_hard`.
+- `make clean all run` successfully builds and runs all programs;
+- `file` confirms ELF64 x86-64;
+- `readelf -lW` shows `GNU_STACK` without execute permission and the presence of `GNU_RELRO`;
+- `objdump -d --disassemble=main fib` confirms a loop with `test`, `je`, `dec`, and `jne`;
+- the calculated input fully defuses the four main phases and the hidden phase of `bomb_hard`.
 
-## Дополнительный benchmark: scalar и AVX-512
+## Additional benchmark: scalar and AVX-512
 
-Это бонусное упражнение. Оно не изменяет основные задания `hello`, `sum`, `fib` и Binary Bomb.
+This is a bonus exercise. It does not change the main `hello`, `sum`, `fib`, and Binary Bomb exercises.
 
-Сравниваются две реализации сложения массивов `uint32_t` по модулю `2^32`:
+Two implementations of `uint32_t` array addition modulo `2^32` are compared:
 
 - [`array_add_scalar.s`](array_add_scalar.s) — scalar x86-64;
-- [`array_add_zen5_avx512f.s`](array_add_zen5_avx512f.s) — AVX-512, 16 элементов за итерацию;
-- [`array_add_dispatch.c`](array_add_dispatch.c) — выбор реализации с безопасным scalar fallback;
-- [`array_add_test.c`](array_add_test.c) и [`array_add_bench.c`](array_add_bench.c) — проверка корректности и измерения;
-- [`ZEN5_ARRAY_ADD_REPORT.md`](ZEN5_ARRAY_ADD_REPORT.md) — краткий отчёт с методикой и результатами.
+- [`array_add_zen5_avx512f.s`](array_add_zen5_avx512f.s) — AVX-512, 16 elements per iteration;
+- [`array_add_dispatch.c`](array_add_dispatch.c) — implementation selection with a safe scalar fallback;
+- [`array_add_test.c`](array_add_test.c) and [`array_add_bench.c`](array_add_bench.c) — correctness checks and measurements;
+- [`ZEN5_ARRAY_ADD_REPORT.md`](ZEN5_ARRAY_ADD_REPORT.md) — a brief report with methodology and results.
 
-AVX-512 функция вызывается только после проверки CPU-возможностей и состояния ОС через CPUID/XGETBV. Если требования не выполнены, используется scalar-реализация.
+The AVX-512 function is called only after checking CPU capabilities and OS state through CPUID/XGETBV. If the requirements are not met, the scalar implementation is used.
 
-Сборка и проверка:
+Build and verify:
 
 ```sh
 make array-add
@@ -111,13 +111,13 @@ make test-array-add
 make test-array-add-zen5
 ```
 
-На массивах общим объёмом 192 MiB в WSL2 получены следующие результаты:
+The following results were obtained on arrays with a combined size of 192 MiB under WSL2:
 
-| Раскладка | Scalar mean | AVX-512 mean | Ускорение |
+| Layout | Scalar mean | AVX-512 mean | Speedup |
 |---|---:|---:|---:|
 | 64-byte aligned | 8.078 ms | 5.594 ms | 1.44× |
 | offset +4 bytes | 7.901 ms | 6.033 ms | 1.31× |
 
-Peak RSS практически одинаков: около `198,250 KiB` у обеих реализаций. Векторизация уменьшила время, но не объём входных и выходного массивов.
+Peak RSS is practically identical: approximately `198,250 KiB` for both implementations. Vectorization reduced runtime, but not the size of the input and output arrays.
 
-**Ограничение:** benchmark запущен под WSL2, где нельзя полностью контролировать power state, размещение по CCD/V-Cache и соседний SMT-поток. Результат показывает преимущество AVX-512 реализации над scalar в этих запусках, но **не подтверждает**, что прирост вызван именно микроархитектурой Zen 5.
+**Limitation:** the benchmark ran under WSL2, where power state, CCD/V-Cache placement, and the neighboring SMT thread cannot be fully controlled. The result shows an advantage for the AVX-512 implementation over scalar in these runs, but **does not confirm** that the gain was caused specifically by the Zen 5 microarchitecture.
