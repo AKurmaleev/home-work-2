@@ -68,4 +68,66 @@ if "$analyzer" "$tmp_dir/short.jsonl" "$tmp_dir/candidate.jsonl" \
 fi
 grep -q 'requires at least 31 samples; found 30' "$tmp_dir/short.err"
 
-printf 'array add RSS analyzer tests passed\n'
+write_samples "$tmp_dir/binary.jsonl" 2 30
+printf '{"type":"rss_result","result":"ok","run_id":31,"linux_ru_maxrss_kib":2}\000ignored' \
+    >> "$tmp_dir/binary.jsonl"
+if "$analyzer" "$tmp_dir/binary.jsonl" "$tmp_dir/candidate.jsonl" \
+    > /dev/null 2> "$tmp_dir/binary.err"; then
+    echo "embedded NUL at EOF unexpectedly accepted" >&2
+    exit 1
+fi
+grep -q 'line is empty, binary, or too long' "$tmp_dir/binary.err"
+
+sed 's/$/\r/' "$tmp_dir/baseline.jsonl" > "$tmp_dir/crlf.jsonl"
+"$analyzer" "$tmp_dir/crlf.jsonl" "$tmp_dir/candidate.jsonl" \
+    > "$tmp_dir/crlf-analysis.jsonl"
+cmp "$tmp_dir/analysis.jsonl" "$tmp_dir/crlf-analysis.jsonl"
+
+write_samples "$tmp_dir/no-newline.jsonl" 2 30
+printf '{"type":"rss_result","result":"ok","run_id":31,"linux_ru_maxrss_kib":2}' \
+    >> "$tmp_dir/no-newline.jsonl"
+"$analyzer" "$tmp_dir/no-newline.jsonl" "$tmp_dir/candidate.jsonl" \
+    > "$tmp_dir/no-newline-analysis.jsonl"
+cmp "$tmp_dir/analysis.jsonl" "$tmp_dir/no-newline-analysis.jsonl"
+
+printf '\n' > "$tmp_dir/empty-line.jsonl"
+printf '%8192s\n' '' > "$tmp_dir/long-line.jsonl"
+for input in empty-line long-line; do
+    if "$analyzer" "$tmp_dir/$input.jsonl" "$tmp_dir/candidate.jsonl" \
+        > /dev/null 2> "$tmp_dir/$input.err"; then
+        echo "$input unexpectedly accepted" >&2
+        exit 1
+    fi
+    grep -q 'line is empty, binary, or too long' "$tmp_dir/$input.err"
+done
+
+write_samples "$tmp_dir/zero-rss.jsonl" 0 31
+if "$analyzer" "$tmp_dir/zero-rss.jsonl" "$tmp_dir/candidate.jsonl" \
+    > /dev/null 2> "$tmp_dir/zero-rss.err"; then
+    echo "zero RSS unexpectedly accepted" >&2
+    exit 1
+fi
+grep -q 'expected rss_result/result ok, run_id 1' "$tmp_dir/zero-rss.err"
+
+if "$analyzer" "$tmp_dir/missing.jsonl" "$tmp_dir/candidate.jsonl" \
+    > /dev/null 2> "$tmp_dir/missing.err"; then
+    echo "missing input unexpectedly accepted" >&2
+    exit 1
+fi
+grep -q 'cannot open input' "$tmp_dir/missing.err"
+
+if "$analyzer" "$tmp_dir" "$tmp_dir/candidate.jsonl" \
+    > /dev/null 2> "$tmp_dir/read-error.err"; then
+    echo "input read error unexpectedly accepted" >&2
+    exit 1
+fi
+grep -q 'input read failed' "$tmp_dir/read-error.err"
+
+if "$analyzer" "$tmp_dir/baseline.jsonl" "$tmp_dir/candidate.jsonl" \
+    > /dev/full 2> "$tmp_dir/output-error.err"; then
+    echo "output write error unexpectedly accepted" >&2
+    exit 1
+fi
+grep -q 'output write failed' "$tmp_dir/output-error.err"
+
+printf 'array add RSS analyzer tests passed: 13 scenarios\n'

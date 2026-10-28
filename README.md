@@ -81,13 +81,22 @@ The answers, identified comparisons, conditional branches, jump table, and comma
 
 ## Verification
 
-The assignment was verified on Ubuntu 24.04 x86-64 with Clang 18:
+The following historical verification was recorded on Ubuntu 24.04 x86-64 with Clang 18. The original `bomb_hard` is not included, so its runtime result was not independently reverified in the current [HW2 review](HW2_REVIEW.md):
 
 - `make clean all run` successfully builds and runs all programs;
 - `file` confirms ELF64 x86-64;
 - `readelf -lW` shows `GNU_STACK` without execute permission and the presence of `GNU_RELRO`;
 - `objdump -d --disassemble=main fib` confirms a loop with `test`, `je`, `dec`, and `jne`;
 - the calculated input fully defuses the four main phases and the hidden phase of `bomb_hard`.
+
+Output and parser regression tests (Linux, Python 3, and GNU coreutils):
+
+```sh
+make test-output-contract
+make test-array-add-stats test-array-add-rss-analyze
+```
+
+`test-output-contract` uses a separate executable with synthetic clock and CPU-affinity seams. It checks JSONL, exact assembly output, and `/dev/full` failures without measuring performance. It still uses real guarded CPU dispatch. The assembly programs and benchmark CLI return failure when stdout cannot be written or flushed. The RSS analyzer rejects embedded NUL bytes, including in an unterminated final line.
 
 ## Additional benchmark: scalar and AVX-512
 
@@ -111,7 +120,7 @@ make test-array-add
 make test-array-add-zen5
 ```
 
-The following results were obtained on arrays with a combined size of 192 MiB under WSL2:
+The following historical results were obtained on arrays with a combined size of 192 MiB under WSL2. Numbers are preserved unchanged; see [HW2 review findings S4–S5](HW2_REVIEW.md#standards-findings) for inference and reproducibility limits under the current rules:
 
 | Layout | Scalar mean | AVX-512 mean | Speedup |
 |---|---:|---:|---:|

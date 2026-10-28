@@ -16,7 +16,7 @@ ARRAY_ADD_LIBS := -lm
 	test-array-add-rss-analyze test-array-add-zen5 \
 	array-add-test-sanitize array-add-stats-test-sanitize \
 	array-add-rss-analyze-sanitize \
-	test-array-add-rss-analyze-sanitize clean
+	test-array-add-rss-analyze-sanitize test-output-contract clean
 
 all: $(PROGRAMS)
 
@@ -60,6 +60,19 @@ array-add-rss-analyze: array_add_rss_analyze.c $(ARRAY_ADD_STATS_SOURCE) \
 		$(ARRAY_ADD_STATS_SOURCE) $(ARRAY_ADD_LDFLAGS) \
 		$(ARRAY_ADD_LIBS) -o $@
 
+array-add-bench-contract-test: array_add_bench.c array_add_bench_test_clock.c \
+		$(ARRAY_ADD_SOURCES) $(ARRAY_ADD_HEADERS) $(ARRAY_ADD_STATS_SOURCE) \
+		$(ARRAY_ADD_STATS_HEADER)
+	$(CC) $(ARRAY_ADD_CFLAGS) array_add_bench.c array_add_bench_test_clock.c \
+		$(ARRAY_ADD_SOURCES) $(ARRAY_ADD_STATS_SOURCE) \
+		$(ARRAY_ADD_LDFLAGS) -Wl,--wrap=clock_gettime \
+		-Wl,--wrap=sched_getaffinity -Wl,--wrap=sched_getcpu \
+		$(ARRAY_ADD_LIBS) -o $@
+
+test-output-contract: all array-add-bench-contract-test output_contract_test.sh
+	sh output_contract_test.sh ./array-add-bench-contract-test \
+		./hello ./sum ./fib
+
 test-array-add: array-add-test
 	./array-add-test
 
@@ -100,4 +113,5 @@ test-array-add-rss-analyze-sanitize: array-add-rss-analyze-sanitize \
 clean:
 	rm -f $(PROGRAMS) array-add-test array-add-stats-test array-add-bench \
 		array-add-rss-analyze array-add-test-sanitize \
-		array-add-stats-test-sanitize array-add-rss-analyze-sanitize *.o
+		array-add-stats-test-sanitize array-add-rss-analyze-sanitize \
+		array-add-bench-contract-test *.o

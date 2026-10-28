@@ -1,5 +1,6 @@
 #include "array_add_stats.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,11 @@ static double median_sorted(const double *values, size_t count)
 
     if ((count & 1U) != 0U) {
         return values[middle];
+    }
+    /* Values and deviations are nonnegative. Avoid halving subnormals unless
+       the sum could overflow. */
+    if (values[middle] <= DBL_MAX / 2.0) {
+        return (values[middle - 1U] + values[middle]) / 2.0;
     }
     return (values[middle - 1U] / 2.0) + (values[middle] / 2.0);
 }

@@ -550,8 +550,36 @@ static void test_unpaired_comparison_rejects_invalid_input(void)
               MAXIMUM_ABSOLUTE_CI_TOTAL_WIDTH, &comparison));
 }
 
+static void test_even_median_extremes(void)
+{
+    const char *test_name = "even-median-extremes";
+    const double values[][2] = {
+        {DBL_TRUE_MIN, DBL_TRUE_MIN},
+        {DBL_TRUE_MIN, 3.0 * DBL_TRUE_MIN},
+        {DBL_MAX, DBL_MAX}
+    };
+    const double expected_medians[] = {
+        DBL_TRUE_MIN, 2.0 * DBL_TRUE_MIN, DBL_MAX
+    };
+
+    for (size_t index = 0U; index < sizeof(values) / sizeof(values[0]);
+         ++index) {
+        array_add_unpaired_sample samples[2] = {
+            {.sample_id = 1U, .value = values[index][0]},
+            {.sample_id = 2U, .value = values[index][1]}
+        };
+        array_add_unpaired_summary summary = {0};
+
+        CHECK(test_name,
+              array_add_stats_analyze_unpaired(samples, 2U, &summary));
+        CHECK(test_name, summary.trimmed_mean == expected_medians[index]);
+        CHECK(test_name, summary.retained_median == expected_medians[index]);
+    }
+}
+
 int main(void)
 {
+    test_even_median_extremes();
     test_json_double_round_trip();
     test_trim_counts();
     test_whole_pair_trim();

@@ -136,20 +136,29 @@ static bool read_samples(const char *path, sample_group *group)
         return false;
     }
 
-    while (fgets(line, sizeof(line), input) != NULL) {
+    for (;;) {
         double rss_kib;
-        size_t length;
+        size_t length = 0U;
+        int byte;
 
+        while ((byte = fgetc(input)) != EOF && byte != '\n') {
+            if (byte == '\0' || length == sizeof(line) - 1U) {
+                fprintf(stderr,
+                        "%s:%zu: line is empty, binary, or too long\n",
+                        path, line_number + 1U);
+                goto cleanup;
+            }
+            line[length++] = (char)byte;
+        }
+        if (byte == EOF && length == 0U) {
+            break;
+        }
         ++line_number;
-        length = strlen(line);
-        if (length == 0U ||
-            (line[length - 1U] != '\n' && !feof(input))) {
+        line[length] = '\0';
+        if (length == 0U) {
             fprintf(stderr, "%s:%zu: line is empty, binary, or too long\n",
                     path, line_number);
             goto cleanup;
-        }
-        if (line[length - 1U] == '\n') {
-            line[--length] = '\0';
         }
         if (length > 0U && line[length - 1U] == '\r') {
             line[--length] = '\0';

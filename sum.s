@@ -20,10 +20,21 @@ main:
     leaq sum_format(%rip), %rdi
     xorl %eax, %eax
     call printf@PLT
+    testl %eax, %eax
+    js .Loutput_failed
 
-    xorl %eax, %eax
+    # libc exit cannot report a delayed stdout error to our caller.
+    xorl %edi, %edi
+    call fflush@PLT
+    testl %eax, %eax
+    setne %al
+    movzbl %al, %eax
+.Lreturn:
     popq %rbp
     ret
+.Loutput_failed:
+    movl $1, %eax
+    jmp .Lreturn
 .size main, .-main
 
 .section .note.GNU-stack,"",@progbits

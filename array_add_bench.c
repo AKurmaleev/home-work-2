@@ -1029,7 +1029,7 @@ cleanup:
     return result;
 }
 
-int main(int argc, char **argv)
+static int run_command(int argc, char **argv)
 {
     benchmark_options options;
     implementation_choice implementation = IMPL_AUTO;
@@ -1071,4 +1071,15 @@ int main(int argc, char **argv)
 
     print_usage(argv[0]);
     return EXIT_FAILURE;
+}
+
+int main(int argc, char **argv)
+{
+    const int result = run_command(argc, argv);
+
+    if (fflush(stdout) != 0 || ferror(stdout)) {
+        fprintf(stderr, "output write failed\n");
+        return EXIT_FAILURE;
+    }
+    return result;
 }
